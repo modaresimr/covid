@@ -1,0 +1,9 @@
+output
+*.zip
+*.csv
+.ipynb_checkpoints/
+__MACOSX/
+__pycache__/
+*.pdf
+*.png
+*.json
