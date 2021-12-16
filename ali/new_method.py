@@ -78,22 +78,25 @@ def reEvalAll():
         if not "P" in id :continue
         try:
             print(f'\r{id}',end='')
-            alarms = pd.read_csv(f'output/my/{id}/alarm.csv').fillna(0)
-            alarms['datetime'] = pd.to_datetime(alarms['datetime'])
-            alarms = alarms.set_index('datetime')
-            rhr = pd.read_hdf(f'output/my/{id}/rhr.h5', 'rhr',mode='r')
-
+            
             with open(f'output/my/{id}/data.json', 'r') as f:
                 info=json.load(f)
                 info['covid_test_date'] = pd.to_datetime(info['covid_test_date']) if info['covid_test_date']!='None' else None
                 info['symptom_date'] = pd.to_datetime(info['symptom_date'])if info['symptom_date'] != 'None' else None
+            if not info['covid_test_date']:
+                continue
+            alarms = pd.read_csv(f'output/my/{id}/alarm.csv', parse_dates=['datetime'], index_col='datetime').fillna(0)
+            rhr = pd.read_hdf(f'output/my/{id}/rhr.h5', 'rhr', mode='r')
 
             ev = {}
             for method in alarms.columns:
+                # if 'anomaly-detection' not in method:
+                #     continue
                 alarm = alarms[[method]].rename(columns={method: 'alarm'})
                 res = eval.eval_both(rhr=rhr, alerts=alarm, info=info)
                 ev[method] = pd.DataFrame(res).T.stack()
-
+            if len(ev)==0:continue
+            # ui.plotAll(rhr,alarms,info,show=True)
             df = pd.concat(ev, axis=1).T
             # df = df.round(2)#.sort_index(axis=1)
             df.round(2).to_csv(f'output/my/{id}/eval.csv')

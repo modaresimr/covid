@@ -4,6 +4,7 @@ from IPython.display import display
 import subprocess
 from . import ui
 from . import eval
+from . import timeseries_anomaly_detection
 import os,shutil
 import traceback
 import json
@@ -83,7 +84,7 @@ def isolationforest2(device,rhr):
     from sklearn.ensemble import IsolationForest
     df = rhr.resample("24H").mean().reset_index()
     df['median'] = df.expanding().median().astype(int)['heartrate']
-    df['heartrate'] = df['heartrate'].interpolate()
+    df['heartrate'] = df['heartrate'].dropna()
     model = IsolationForest(contamination="auto")
     model.fit(df[['heartrate']])
     df['alarm'] = pd.Series(model.predict(df[['heartrate']])).apply(lambda x: 1 if (x == -1) else 0)
@@ -172,6 +173,11 @@ def alisignal(device, rhr,seg):
     # print('doing original one')
     # nightsignal2(device,hr_file,step_file)
     return allalarms[['alarm']]
+
+
+def anomaly_detection(rhr,info,seg='1T'):
+    
+    return timeseries_anomaly_detection.anomaly_detection(rhr,info,seg=seg)
 
 
 def randomSignal(device, rhr):
@@ -301,7 +307,7 @@ def run_old(run_methods, device, hr_file, step_file, covid_test_date, symptom_da
         df = pd.read_csv(f'output/my/{id}/eval.csv', index_col=0)
     except:
         df=pd.DataFrame()
-    os.makedirs(f'output/my/{id}', exist_ok=True)
+    
 
     
     try:
@@ -399,6 +405,7 @@ def load(id):
 
 def convert(hr_file, step_file, info,force=False):
     id=info['id']
+    os.makedirs(f'output/my/{id}', exist_ok=True)
     files = [f'output/my/{id}/hr.h5', f'output/my/{id}/rhr.h5', f'output/my/{id}/step.h5', f'output/my/{id}/data.json']
     exi = [os.path.isfile(f) for f in files]
     if not (force or (False in exi)):
@@ -426,17 +433,11 @@ def convert(hr_file, step_file, info,force=False):
 def run(run_methods,id, args={}):
     hr,step,rhr,info=load(id)
     device=info['device']
-    try:
-        df = pd.read_csv(f'output/my/{id}/eval.csv', index_col=0)
-        df=df.loc[[c for c in df.index if 'alisignal' not in c]]
-    except:
-        df=pd.DataFrame()
+    
     os.makedirs(f'output/my/{id}', exist_ok=True)
     
     try:
-        allAlarms = pd.read_csv(f'output/my/{id}/alarm.csv')
-        allAlarms['datetime'] = pd.to_datetime(allAlarms['datetime'])
-        allAlarms = allAlarms.set_index('datetime')
+        allAlarms = pd.read_csv(f'output/my/{id}/alarm.csv',parse_dates=['datetime'],index_col='datetime')
         allAlarms=allAlarms[[c for c in allAlarms.columns if 'alisignal' not in c]]
     except:
         allAlarms = rhr.resample('1d').count()[[]]
@@ -458,6 +459,8 @@ def run(run_methods,id, args={}):
                 out = isolationforest(device=device, rhr=rhr)
             elif method == 'if2':
                 out = isolationforest2(device=device, rhr=rhr)
+            elif 'anomaly-detection' in method:
+                out=anomaly_detection(rhr,info,method.split('_')[1])
             else:
                 continue
             allAlarms[method] = out['alarm']
@@ -476,22 +479,21 @@ def run(run_methods,id, args={}):
     allAlarms=allAlarms.fillna(-3)
     allAlarms.to_csv(f'output/my/{id}/alarm.csv')
     
-    ui.plotAll(rhr=rhr, alerts=allAlarms.drop(['random'],axis=1), info=info, 
+    ui.plotAll(rhr=rhr, alerts=allAlarms, info=info, 
            file=f'output/my/{id}/all.png', show=args.get('debug',0))
-    for method in run_methods:
-        alarm = allAlarms[[method]].rename(columns={method:'alarm'})
-        ev = eval.eval_both(rhr=rhr, alerts=alarm, info=info)
-        for item in ev:
-            df.loc[method,item] = ev[item]
-        
-        # ui.plot(rhr=rhr, alerts=alarm, info=info, title=f'{id} {method}',
-        #     file=f'output/my/{id}/{method}.png', show=args.get('debug',0))
     
-    
-    df['tp_rate'] = df['tp_nature']/(df['tp_nature']+df['fn_nature'])
-    df['tn_rate'] = df['tn_nature']/(df['tn_nature']+df['fp_nature'])
-    df.round(2).to_csv(f'output/my/{id}/eval.csv')
+    ev = {}
+    for method in allAlarms.columns:
+        alarm = allAlarms[[method]].rename(columns={method: 'alarm'})
+        res = eval.eval_both(rhr=rhr, alerts=alarm, info=info)
+        ev[method] = pd.DataFrame(res).T.stack()
 
+    df = pd.concat(ev, axis=1).T
+    # df = df.round(2)#.sort_index(axis=1)
+    df.round(2).to_csv(f'output/my/{id}/eval.csv')
+    
+        
+    
     if args.get('debug',0):
         display(df.round(2))
         

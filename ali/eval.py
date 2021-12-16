@@ -52,35 +52,39 @@ def eval_my(rhr, alerts, info):
 
 def eval_new(rhr, alerts, info):
     hasData = rhr.resample('1d').count()
-    hasData = hasData.index[hasData['heartrate'] > 0]
-
+    hasData = hasData.loc[hasData['heartrate'] > 0]
     
+    alerts=hasData.join(alerts,how='outer').fillna(-4)
     covid_test_date = info['covid_test_date']
     start = rhr.index[0]
+    
     if covid_test_date != None:
-        start = covid_test_date-pd.Timedelta(days=(info['covid_test_date']-alerts.index[0]).days//7*7)
-        
-    week_alerts=alerts[alerts['alarm']==2].resample('7d',origin=start).sum()/2
-
+        start = covid_test_date-pd.Timedelta(days=(info['covid_test_date']-start).days//7*7)
+    
+    alerts['alarm'] = (alerts['alarm']==2)*1
+    
+    week_alerts = (alerts.resample('7d', origin=start).sum()).fillna(-4)
+    week_alerts.index+=pd.to_timedelta('3d')
     tp=0
     fn=0
     fp=0
     tn=0
     for i,row in week_alerts.iterrows():
-        if covid_test_date != None and abs((i-covid_test_date).days) < 8:
+        if covid_test_date != None and abs((i-covid_test_date).days) <=7:
+            # print(f'i {i} \talarm={row["alarm"]}  \tdays={(i-covid_test_date).days}')
             if row['alarm']>0:tp+=1
-            else: fn+=1
-        elif covid_test_date != None and abs((i-covid_test_date).days) < 15:
+            
+        elif covid_test_date != None and abs((i-covid_test_date).days) <= 14:
             pass
         else:
             if row['alarm'] > 0:
                 fp += 1
-            else:
+            elif row['alarm'] == 0:
                 tn += 1
     
     res = {}
-    res['tp'] = tp
-    res['fn'] = fn
+    res['tp'] = min(1,tp)
+    res['fn'] = 0 if covid_test_date == None else 1- res['tp']
     res['fp'] = fp
     res['tn'] = tn
 

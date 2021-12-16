@@ -52,10 +52,11 @@ def plot(rhr,alerts,info,title='',file=None,show=False):
     # plt.plot(rhr24median.index, rhr24median['heartrate']+4, color='red', linewidth=1, linestyle='dashed', label="Med RHR over night + 4")
 
     # display(alerts)    
-    for d,row in alerts.iterrows():
-        v=row['alarm']
-        if(v>0):
-            plt.axvline(x=d, linestyle='-', color='red' if v==2 else 'yellow', linewidth=1)
+    if not alerts is None:
+        for d,row in alerts.iterrows():
+            v=row['alarm']
+            if(v>0):
+                plt.axvline(x=d, linestyle='-', color='red' if v==2 else 'yellow', linewidth=1)
     
     
     if(covid_test_date!=None):
