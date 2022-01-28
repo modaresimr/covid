@@ -1,0 +1,5 @@
+
+
+class AbstractMethod:
+    
+    def run()

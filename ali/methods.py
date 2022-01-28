@@ -9,11 +9,9 @@ import os,shutil
 import traceback
 import json
 def read(device,hr_file,step_file):
+  
     hr = pd.read_csv(hr_file)
-    
     # display( hr.loc[pd.to_datetime(hr['datetime'], errors='coerce').isna()])
-
-
     hr['datetime'] = pd.to_datetime(hr['datetime'],errors='coerce')
     error = hr.loc[hr['datetime'].isna()]
     if len(error)>0:
@@ -22,25 +20,64 @@ def read(device,hr_file,step_file):
     hr=hr.set_index('datetime')
     # if len(error) > 0:
     #     display(hr)
-    step = pd.read_csv(step_file)
+    try:
+        step = pd.read_csv(step_file)
+    except:
+        raise Exception(f"Invalid Format ")
     if device=='Fitbit':
         step['datetime']=pd.to_datetime(step['datetime'])
         step=step.set_index('datetime')
     else: #Apple Watch
-        error = step.loc[pd.to_datetime(step['start_datetime'], errors='coerce').isna()]
+        if step.columns[0] == 'BigQuery error in query operation: Error processing job':
+            raise Exception(f"Invalid Format {step}")
+        if len(step['end_datetime'].unique()) < 2:
+            device = 'Fitbit' #step['device'][0]
 
-        if len(error) > 0:
-            step = step.iloc[0:error.index[0]]  # for resolving P678649
-            step['steps']=step['steps'].astype(int)
-        step['start_datetime']=pd.to_datetime(step['start_datetime']).dt.floor('1T')
-        step['end_datetime'] = pd.to_datetime(step['end_datetime']).dt.ceil('1T')
-        step=step.loc[step['end_datetime'] > step['start_datetime']]
-        step=step.loc[step['end_datetime'] - step['start_datetime']<pd.to_timedelta('10H')]
-    return hr,step
+            step=step.drop(columns=['device']).rename(columns={'start_datetime':'datetime'})
+            step['datetime']=pd.to_datetime(step['datetime'])
+            step=step.set_index('datetime')
+        else:
+            error = step.loc[pd.to_datetime(step['start_datetime'], errors='coerce').isna()]
+            
+            if len(error) > 0:
+                step = step.iloc[0:error.index[0]]  # for resolving P678649
+                step['steps']=step['steps'].astype(int)
+            step['start_datetime']=pd.to_datetime(step['start_datetime']).dt.floor('1T')
+            step['end_datetime'] = pd.to_datetime(step['end_datetime']).dt.ceil('1T')
+            step=step.loc[step['end_datetime'] > step['start_datetime']]
+            step=step.loc[step['end_datetime'] - step['start_datetime']<pd.to_timedelta('10H')]
+    return device,hr,step
+
+def createRestingHR_new(device,hr,step):
+    
+    if device=='Fitbit':
+        # Cacluating Resting HR
+        step_n=step.resample('1T').mean()
+    #     hr['datetime_m'] = hr.index.floor('1T')
+    #     hr_step = hr.join(step, on='datetime_m', how='outer')
+    else: #Apple Watch
+        step_n=pd.DataFrame(columns=['steps'])
+    #         print(step)
+        all=[]
+        for k,row in step.iterrows():
+            newRange=pd.date_range(row['start_datetime'].floor('1T'),row['end_datetime'].floor('1T'),freq='1T')
+            a=pd.DataFrame(index=newRange)
+            a['steps']=row['steps']/len(newRange)
+            all.append(a)
+
+        step_n=pd.concat(all)
+
+    hr = hr.resample('1T').mean()
+    hr_step = hr.join(step_n, how='outer')
+
+    rhr_hint=hr_step.rolling('12T',min_periods=0).count().loc[hr.index].dropna()
+    rhr=hr.loc[rhr_hint[(rhr_hint['heartrate']>0) &(rhr_hint['steps']==0)].index].dropna()
+    return rhr
+    
 
 def createRestingHR(device,hr,step):
     nighthr = hr[(hr.index.hour >= 0) & (hr.index.hour <= 6)].copy()
-
+    
     if device=='Fitbit':
         # Cacluating Resting HR
         nighthr['datetime_m'] = nighthr.index.floor('T')
@@ -175,20 +212,21 @@ def alisignal(device, rhr,seg):
     return allalarms[['alarm']]
 
 
-def anomaly_detection(rhr,info,seg='1T'):
+def anomaly_detection(rhr,rhrf,info,params):
     
-    return timeseries_anomaly_detection.anomaly_detection(rhr,info,seg=seg)
+    return timeseries_anomaly_detection.anomaly_detection(rhrf,info,params)
 
 
-def randomSignal(device, rhr):
-    rhr24 = rhr.resample('24H').mean()
-    rhr24median = rhr24.expanding().median().astype(int)
+def randomSignal(device, rhr,rate):
+    rhr24 = rhr.resample('1D').max().dropna()
+    # rhr24median = rhr24.expanding().median().astype(int)
+    red_alert_dates = rhr24.sample(frac=rate, replace=False, random_state=1).index
 
-
-    red_alert_dates = rhr24.sample(frac=0.13, replace=True, random_state=1).index
+    # red_alert_dates = rhr24.sample(frac=0.13, replace=True, random_state=1).index
+    # red_alert_dates=rhr24.dropna().iloc[::int(1/rate),:].index
     
-    rhr24 = rhr24.interpolate(limit=1)
-    yellow_alert_dates = red_alert_dates
+    # rhr24 = rhr24.interpolate(limit=1)
+    # yellow_alert_dates = red_alert_dates
 
     # red_alert_dates = newJoin[newJoin['heartrate'] > newJoin['hr_median']+4].index
     # yellow_alert_dates = newJoin[(newJoin['heartrate'] > newJoin['hr_median']+3)].index
@@ -257,23 +295,38 @@ def CuSum(device,hr,step,info):
     # display(offline)
     # display(online)
     return eval_under
-def nightsignal_orig(device, hr, step):
+    
+def nightsignal_orig(device, hr, step,info,params):
     import sys
     sys.path.append("..")
     from wearable_infection import nightsignal  
     if device=='Fitbit':
-        nighthr = hr[(hr.index.hour >= 0) & (hr.index.hour <= 6)]
-        rhr = nighthr.resample("1T").mean().dropna().round().join(step).fillna(0).astype(int)
-        rhr.to_csv('/tmp/rhr.csv')    
+        nighthr = hr[(hr.index.hour >= 0) & (hr.index.hour <= 6)][['heartrate']]
+        
+        rhr = nighthr.resample("1T").mean().dropna().round().join(step).fillna(0)[['heartrate','steps']].astype(int)
+        
+        # df.drop(['row_num','start_date','end_date','symbol'], axis=1, errors='ignore').astype(int)
+        # display(rhr.loc[rhr['end_datetime'] == ' '])
+        rhr.to_csv(f'/tmp/rhr{info["id"]}.csv')
         out=nightsignal.run(heartrate_file=None,
                         step_file=None,
                         device=device,
-                        restinghr_file='/tmp/rhr.csv')
+                        restinghr_file=f'/tmp/rhr{info["id"]}.csv',
+                        id=info['id'],
+                            red_threshold=params['red_threshold'])
     else:
         out=nightsignal.run(heartrate_file=hr,
                         step_file=step,
-                        device=device)
-        # out.index=out.index.rename('datetime')    
+                        device=device,
+                        id=info['id'],
+                         red_threshold=params['red_threshold'])
+        # out.index=out.index.rename('datetime') 
+    # print(out)
+    os.system(f'rm /tmp/rhr{info["id"]}.csv')
+    if out.columns.shape[0]==0:
+        allalarms = hr.resample('1D').max()
+        allalarms['alarm'] = 0
+        return allalarms[['alarm']]
     out = out.rename(columns={'date':'datetime','val': 'alarm'})
     out['datetime'] = pd.to_datetime(out['datetime'])
     out=out.set_index('datetime').astype(int)
@@ -281,6 +334,45 @@ def nightsignal_orig(device, hr, step):
     # out=out.loc[out['alarm']>0]
     out.index=out.index.floor('1D')
     return out
+
+def rhrad(info,args,hr,step,rhr,params):
+    import sys
+    sys.path.append("..")
+    from rhrad.scripts import main
+    if info["device"] == 'AppleWatch':
+        # step_n = pd.DataFrame(columns=['steps'])
+    #         print(step)
+        all=[]
+        for k,row in step.iterrows():
+            newRange=pd.date_range(row['start_datetime'].floor('1T'),row['end_datetime'].floor('1T'),freq='1T')
+            a=pd.DataFrame(index=newRange)
+            a['steps']=row['steps']/len(newRange)
+            all.append(a)
+
+        step=pd.concat(all)
+    
+    return main.run(hr,step,info,params)
+
+def laad(info,args,hr,step):
+    import sys
+    sys.path.append("..")
+    from LAAD.scripts import laad_covid19 
+
+
+    
+    if info["device"] == 'AppleWatch':
+        import pandasql as ps
+        sqlcode = '''
+                select hr.datetime,step.steps
+                from hr,step
+                where hr.datetime >= step.start_datetime and hr.datetime <= step.end_datetime
+            '''
+        step2 = ps.sqldf(sqlcode, locals())
+        step2['datetime'] = pd.to_datetime(step2['datetime'])
+        step2 = step2.set_index('datetime')
+        step=step2['steps']
+    
+    return laad_covid19.run(info,args,hr,step)
 
 def usingAll(allAlarms):
     alarms=allAlarms.clip(lower=0)
@@ -293,120 +385,24 @@ def usingAll(allAlarms):
     alarms['alarm'] = (su >= len(targets))*1+(su >= len(targets)*1.5)*1
     return alarms[['alarm']]
 
-def run_old(run_methods, device, hr_file, step_file, covid_test_date, symptom_date,id, args={}):
-    try:
-        covid_test_date = pd.to_datetime(covid_test_date)
-    except:
-        covid_test_date=None    
-    try:
-        symptom_date = pd.to_datetime(symptom_date) 
-    except:
-        symptom_date=None
-    
-    try:
-        df = pd.read_csv(f'output/my/{id}/eval.csv', index_col=0)
-    except:
-        df=pd.DataFrame()
-    
-
-    
-    try:
-        hr=pd.read_hdf(f'output/my/{id}/hr.h5', 'hr')
-        rhr=pd.read_hdf(f'output/my/{id}/rhr.h5', 'rhr')
-        step=pd.read_hdf(f'output/my/{id}/step.h5', 'step')
-        with open(f'output/my/{id}/data.json', 'r') as f:
-            data=json.load(f)
-    except:
-        hr, step = read(device, hr_file, step_file)
-        rhr = createRestingHR(device, hr=hr, step=step)
-        hr.to_hdf(f'output/my/{id}/hr.h5', 'hr', complevel=9, complib='bzip2')
-        step.to_hdf(f'output/my/{id}/step.h5', 'step', complevel=9, complib='bzip2')
-        rhr.to_hdf(f'output/my/{id}/rhr.h5', 'rhr', complevel=9, complib='bzip2')
-        data={'device': device, 'covid_test_date': str(covid_test_date), 'symptom_date': str(symptom_date), 'id': id}
-        with open(f'output/my/{id}/data.json', 'w') as f:
-            json.dump(data,f)
-    
-    try:
-        allAlarms = pd.read_csv(f'output/my/{id}/alarm.csv')
-        allAlarms['datetime'] = pd.to_datetime(allAlarms['datetime'])
-        allAlarms = allAlarms.set_index('datetime')
-    except:
-        allAlarms = rhr.resample('1d').count()[[]]
-    
-    # print(f'{id} is done')
-    # return pd.read_csv(f'output/my/{id}/eval.csv')
-    for method in run_methods:
-        try:
-            if method == 'nightsignal':
-                out = nightsignal(device=device, rhr=rhr)
-            elif method == 'ns_orig':
-                out = nightsignal_orig(device=device, hr=hr, step=step)
-            elif 'alisignal' in method:
-                seg=int(method.split('_')[1])
-                out = alisignal(device=device, rhr=rhr,seg=seg)
-            elif method == 'random':
-                out = randomSignal(device=device, rhr=rhr)
-            elif method == 'CuSum':
-                out = CuSum(device=device, hr=hr, step=step, id=id, covid_test_date=covid_test_date, symptom_date=symptom_date)
-            elif method == 'if':
-                out = isolationforest(device=device, rhr=rhr)
-            else:
-                continue
-            allAlarms[method] = out['alarm']
-        except Exception as e:
-            if args.get('show_exception',0):
-                print(f'id={id} {e}'[0:200])
-                traceback.print_exc()
-
-            continue
-        
-        
-    if 'use-all' in run_methods:
-        out = usingAll(allAlarms)
-        if out!=None:
-            allAlarms['use-all'] = out['alarm']
-    allAlarms=allAlarms.fillna(-3)
-    allAlarms.to_csv(f'output/my/{id}/alarm.csv')
-    
-    
-    for method in run_methods:
-        alarm = allAlarms[[method]].rename(columns={method:'alarm'})
-        ev = eval.eval_both(rhr=rhr, alerts=alarm, covid_test_date=covid_test_date, symptom_date=symptom_date)
-        for item in ev:
-            df.loc[method,item] = ev[item]
-        
-        ui.plot(rhr=rhr, alerts=alarm, covid_test_date=covid_test_date, symptom_date=symptom_date, title=f'{id} {method}',
-            file=f'output/my/{id}/{method}.png', show=args.get('debug',0))
-    
-    
-    df['tp_rate'] = df['tp_nature']/(df['tp_nature']+df['fn_nature'])
-    df['tn_rate'] = df['tn_nature']/(df['tn_nature']+df['fp_nature'])
-    df.round(2).to_csv(f'output/my/{id}/eval.csv')
-
-    if args.get('debug',0):
-        display(df.round(2))
-        
-            
-    
-    return df
-
 
 
 
 def load(id):
     hr = pd.read_hdf(f'output/my/{id}/hr.h5', 'hr',mode='r')
     rhr = pd.read_hdf(f'output/my/{id}/rhr.h5', 'rhr',mode='r')
+    rhrf = pd.read_hdf(f'output/my/{id}/rhrf.h5', 'rhr',mode='r')
     step = pd.read_hdf(f'output/my/{id}/step.h5', 'step',mode='r')
     with open(f'output/my/{id}/data.json', 'r') as f:
         info = json.load(f)
     info['covid_test_date'] = pd.to_datetime(info['covid_test_date']) if info['covid_test_date'] != 'None' else None
     info['symptom_date'] = pd.to_datetime(info['symptom_date'])if info['symptom_date'] != 'None' else None
-    return hr,step,rhr,info
+    return hr,step,rhr,rhrf,info
 
 def convert(hr_file, step_file, info,force=False):
     id=info['id']
     os.makedirs(f'output/my/{id}', exist_ok=True)
-    files = [f'output/my/{id}/hr.h5', f'output/my/{id}/rhr.h5', f'output/my/{id}/step.h5', f'output/my/{id}/data.json']
+    files = [f'output/my/{id}/hr.h5', f'output/my/{id}/rhr.h5', f'output/my/{id}/rhrf.h5', f'output/my/{id}/step.h5', f'output/my/{id}/data.json']
     exi = [os.path.isfile(f) for f in files]
     if not (force or (False in exi)):
         return
@@ -420,51 +416,97 @@ def convert(hr_file, step_file, info,force=False):
     except:
         symptom_date=None    
     device=info['device']
-    hr, step = read(device, hr_file, step_file)
+    device,hr, step = read(device, hr_file, step_file)
     rhr = createRestingHR(device, hr=hr, step=step)
+    rhrf = createRestingHR_new(device, hr=hr, step=step)
     hr.to_hdf(f'output/my/{id}/hr.h5', 'hr', complevel=9, complib='bzip2')
     step.to_hdf(f'output/my/{id}/step.h5', 'step', complevel=9, complib='bzip2')
     rhr.to_hdf(f'output/my/{id}/rhr.h5', 'rhr', complevel=9, complib='bzip2')
+    rhrf.to_hdf(f'output/my/{id}/rhrf.h5', 'rhr', complevel=9, complib='bzip2')
     info = {'id': id,'device': device, 'covid_test_date': str(covid_test_date), 'symptom_date': str(symptom_date)}
     with open(f'output/my/{id}/data.json', 'w') as f:
         json.dump(info, f)
     # return load(id)
 
-def run(run_methods,id, args={}):
-    hr,step,rhr,info=load(id)
+def run(id, args={}):
+    hr,step,rhr,rhrf,info=load(id)
     device=info['device']
-    
+    if args['debug']:
+        print(info)
     os.makedirs(f'output/my/{id}', exist_ok=True)
     
     try:
-        allAlarms = pd.read_csv(f'output/my/{id}/alarm.csv',parse_dates=['datetime'],index_col='datetime')
-        allAlarms=allAlarms[[c for c in allAlarms.columns if 'alisignal' not in c]]
+            allAlarms = pd.read_csv(f'output/my/{id}/alarm.csv',parse_dates=['datetime'],index_col='datetime')
+            allAlarms=allAlarms[[c for c in allAlarms.columns if 'alisignal' not in c]]
     except:
-        allAlarms = rhr.resample('1d').count()[[]]
-    
+        allAlarms = rhrf.resample('1d').count()[[]]
+    run_methods=args['methods']
     for method in run_methods:
+        if not args['rerun'] and method in allAlarms.columns:
+            continue
+        args['current_method']=method
         try:
             if method == 'nightsignal':
                 out = nightsignal(device=device, rhr=rhr)
-            elif method == 'ns_orig':
-                out = nightsignal_orig(device=device, hr=hr, step=step)
+            elif  'ns-orig' in method:
+                out = nightsignal_orig(device=device, hr=hr, step=step,info=info,params={
+                    'red_threshold': int(method.split('_')[1])
+                })
             elif 'alisignal' in method:
                 seg = int(method.split('_')[1])
                 out = alisignal(device=device, rhr=rhr, seg=seg)
-            elif method == 'random':
-                out = randomSignal(device=device, rhr=rhr)
+            elif 'random' in method:
+                out = randomSignal(device=device, rhr=rhrf,rate=float(method.split('_')[1]))
             elif method == 'CuSum':
                 out = CuSum(device=device, hr=hr, step=step, info=info)
             elif method == 'if':
                 out = isolationforest(device=device, rhr=rhr)
             elif method == 'if2':
                 out = isolationforest2(device=device, rhr=rhr)
-            elif 'anomaly-detection' in method:
-                out=anomaly_detection(rhr,info,method.split('_')[1])
+            elif method == 'laad':
+                out = laad(info=info,args=args, hr=hr,step=step)
+            elif 'rhrad' in method:
+
+                out = rhrad(info=info, args=args, hr=hr, step=step, rhr=rhr,params= {
+                    'mode': 'v7',
+                    'outliers_fraction': method.split('_')[1]})
+            elif 'ad_' in method:
+                #flags> a: avg feature
+                #flags> b: avg of previous avg feature
+                #flags> d: day feature
+                #flags> f: time segment
+                #flags> l: transfer learning
+                #flags> m: median feature
+                #flags> n: avg of previous median feature
+                #flags> o: only over night
+                #flags> t: time feature
+                
+                params={'flags': method.split('_')[1],
+                        'seg': pd.to_timedelta(method.split('_')[2]),
+                        'overlap':pd.to_timedelta(method.split('_')[3]),
+                        'resolution':method.split('_')[4],
+                        'model':'auto-encoder',
+                        # 'model':'lstm',
+                        # 'use_time_feature':0,
+                        #'use_time_feature':1,
+                        'test_days':2,
+                        'min_train_days':7,
+                        'max_train_days':50,
+                        # 'future_data_if_not_enough_data':14,
+                        'future_data_if_not_enough_data':0,
+                        'only_new_points':1,
+                        # 'use_median':1,
+                        **args
+                        }
+                # print(params)
+                out = anomaly_detection(rhr, rhrf, info, params)
             else:
                 continue
             allAlarms[method] = out['alarm']
+        except KeyboardInterrupt:
+            raise
         except Exception as e:
+            print(f'{id} {method} ignored because of exception {e}')
             if args.get('show_exception',0):
                 print(f'id={id} {e}'[0:200])
                 traceback.print_exc()
@@ -479,23 +521,27 @@ def run(run_methods,id, args={}):
     allAlarms=allAlarms.fillna(-3)
     allAlarms.to_csv(f'output/my/{id}/alarm.csv')
     
-    ui.plotAll(rhr=rhr, alerts=allAlarms, info=info, 
-           file=f'output/my/{id}/all.png', show=args.get('debug',0))
+    if args.get('save_plots_for_user', 0):
+        ui.plotAll(rhr=rhrf, alerts=allAlarms, info=info, 
+               file=f'output/my/{id}/all.png', args=args)
     
     ev = {}
+    # display(rhrf)
     for method in allAlarms.columns:
         alarm = allAlarms[[method]].rename(columns={method: 'alarm'})
-        res = eval.eval_both(rhr=rhr, alerts=alarm, info=info)
+        res = eval.eval_both(rhr=rhrf, alerts=alarm, info=info)
         ev[method] = pd.DataFrame(res).T.stack()
 
     df = pd.concat(ev, axis=1).T
     # df = df.round(2)#.sort_index(axis=1)
+    # print(df)
     df.round(2).to_csv(f'output/my/{id}/eval.csv')
     
         
     
-    if args.get('debug',0):
-        display(df.round(2))
+    if args.get('draw_eval',0):
+        # display(df.round(2))
+        ui.plot_evals(df)
         
             
     

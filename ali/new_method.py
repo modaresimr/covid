@@ -1,3 +1,8 @@
+import multiprocessing
+import traceback
+import numpy as np
+import functools
+from tqdm.notebook import tqdm
 
 import pandas as pd
 from IPython.display import display
@@ -41,6 +46,8 @@ def usingAll():
             
             ui.plot(rhr=rhr, alerts=alarm, covid_test_date=info['covid_test_date'], symptom_date=info['symptom_date'], title=f'{id} use-all',
                     file=f'output/my/{id}/use-all.png', show=1)
+        except KeyboardInterrupt:
+            raise
         except Exception as e:
             print(f'id={id} {e}'[0:200])
             traceback.print_exc()
@@ -71,10 +78,97 @@ def evalAll():
     df.round(2).to_csv(f'output/my/eval.csv')
     display(df)
 
+def reEval(id, args):
+        if not "P" in id:
+            return
+
+
+        try:
+            if not os.path.isfile(f'output/my/{id}/data.json'):
+                return
+            if not os.path.isfile(f'output/my/{id}/alarm.csv'):
+                return
+            if not os.path.isfile(f'output/my/{id}/rhrf.h5'):
+                return
+
+            # print(f'\r{id}', end='')
+            with open(f'output/my/{id}/data.json', 'r') as f:
+                info = json.load(f)
+                info['covid_test_date'] = pd.to_datetime(info['covid_test_date']) if info['covid_test_date'] != 'None' else None
+                info['symptom_date'] = pd.to_datetime(info['symptom_date'])if info['symptom_date'] != 'None' else None
+            # if not info['covid_test_date']:
+            #     continue
+            if args.get('only_positive', 0) and not info['covid_test_date']:
+                return
+
+            alarms = pd.read_csv(f'output/my/{id}/alarm.csv', parse_dates=['datetime'], index_col='datetime').fillna(0)
+
+            rhr = pd.read_hdf(f'output/my/{id}/rhrf.h5', 'rhr', mode='r')
+            # display(rhr)
+            
+            ev = {}
+            for method in alarms.columns:
+                # if 'anomaly-detection' not in method:
+                #     continue
+                alarm = alarms[[method]].rename(columns={method: 'alarm'})
+                res = eval.eval_both(rhr=rhr, alerts=alarm, info=info)
+                ev[method] = pd.DataFrame(res).T.stack()
+            if len(ev) == 0:
+                return
+            # ui.plotAll(rhr,alarms,info,show=True)
+            df = pd.concat(ev, axis=1).T
+            # df=df.astype(int)
+            # df = df.round(2)#.sort_index(axis=1)
+            df.round(2).to_csv(f'output/my/{id}/eval.csv')
+            # display(df)
+            # if args.get('show_')
+            return df
+        except Exception as e:
+            print(f'id={id} {e}'[0:200])
+            traceback.print_exc()
+
+def reEvalAllParallel(args={}):
+    total=None
+    ids = os.listdir('output/my')
+    pool = multiprocessing.Pool(8)
+    runner = functools.partial(reEval, args=args)
+    result = pool.imap(runner, ids)
+    pbar = tqdm(total=len(ids))
+    eval_plot = ui.eval_ploter(add2display=True)
+    try:
+     for i, id in enumerate(ids):
+        res = result.next()
+        pbar.update(1)
+        if res is not None:
+                if args.get('methods',0):
+                    if sum(np.in1d(args['methods'], res.index))!=len(args['methods']):
+                        continue
+                    res = res.loc[args['methods']]
+                if(total is None):
+                    total = res
+                else:
+                    total = total.add(res, fill_value=0)
+                # eval_plot.plot_evals(total)
+                if args.get('show_final_graph', 0):
+                    display(Image(f'output/my/{id}/all.png'))
+                if(i % 1 == 0):
+                    eval_plot.plot_evals(total)
+                    # printEvals(total)
+        # total = total.drop([(typ, t) for t in ['tp', 'fp', 'fn', 'tn']],axis=1)
+    except KeyboardInterrupt:
+        pool.terminate()
+        pool.join()
+        pool.close()
+    total.round(2).to_csv('output/my/eval.csv')
+    eval_plot.plot_evals(total,True)
+    return total.round(2)
 
 def reEvalAll():
     total=None
-    for id in os.listdir('output/my'):
+    eval_plot = ui.eval_ploter()
+    display(eval_plot.out)
+    from tqdm.notebook import tqdm
+    for i,id in tqdm(enumerate(os.listdir('output/my')),total=len(os.listdir('output/my'))):
         if not "P" in id :continue
         try:
             print(f'\r{id}',end='')
@@ -83,11 +177,13 @@ def reEvalAll():
                 info=json.load(f)
                 info['covid_test_date'] = pd.to_datetime(info['covid_test_date']) if info['covid_test_date']!='None' else None
                 info['symptom_date'] = pd.to_datetime(info['symptom_date'])if info['symptom_date'] != 'None' else None
-            if not info['covid_test_date']:
-                continue
+            # if not info['covid_test_date']:
+            #     continue
+            
             alarms = pd.read_csv(f'output/my/{id}/alarm.csv', parse_dates=['datetime'], index_col='datetime').fillna(0)
-            rhr = pd.read_hdf(f'output/my/{id}/rhr.h5', 'rhr', mode='r')
 
+            rhr = pd.read_hdf(f'output/my/{id}/rhr.h5', 'rhr', mode='r')
+            # if info['covid_test_date'] <rhr.index[0]+pd.to_timedelta('21d'):continue
             ev = {}
             for method in alarms.columns:
                 # if 'anomaly-detection' not in method:
@@ -105,7 +201,10 @@ def reEvalAll():
                 total=df
             else:
                 total = total.add(df, fill_value=0)
-            
+            if i%10==2:
+                eval_plot.plot_evals(total)
+        except KeyboardInterrupt:
+            raise
         except Exception as e:
             print(f'id={id} {e}'[0:200])
             traceback.print_exc()
@@ -121,4 +220,6 @@ def reEvalAll():
         # total = total.drop([(typ, t) for t in ['tp', 'fp', 'fn', 'tn']],axis=1)
     
     total.round(2).to_csv('output/my/eval.csv')
-    return total.round(2)
+    total=total.sort_index()
+    eval_plot.plot_evals(total,True)
+    # return total.round(2)

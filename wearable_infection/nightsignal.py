@@ -49,16 +49,16 @@ plt.rc('font', **font)
 plt.rc('xtick',labelsize=8)
 plt.rc('ytick',labelsize=10)
 plt.style.use('seaborn-dark-palette')
+import os
 
-
-def run(heartrate_file = "",step_file = "",restinghr_file = "",device = ""):
+def run(heartrate_file = "",step_file = "",restinghr_file = "",device = "",id="",red_threshold=4):
 
     ###nightsignal configs
     medianConfig = "MedianOfAvgs" # MedianOfAvgs | AbsoluteMedian
-    yellow_threshold = 3
-    red_threshold = 4
-
-                
+    yellow_threshold = red_threshold-1
+    # red_threshold = 4
+    
+    os.makedirs(f'output/ns/{id}', exist_ok=True)
     #################################  Fitbit #################################
     if(device=="Fitbit"):
         with open(restinghr_file , "r") as rhrFile:
@@ -174,10 +174,10 @@ def run(heartrate_file = "",step_file = "",restinghr_file = "",device = ""):
         for key in date_hr_avgs_dic:
             if (key in date_hr_meds_dic):
                 if (date_hr_avgs_dic[key] >= date_hr_meds_dic[key] + red_threshold):
-                    with open("potenital_reds.csv" , "a") as out_file:
+                    with open(f"output/ns/{id}/potenital_reds.csv" , "a") as out_file:
                         out_file.write(key + "\n")
                 if (date_hr_avgs_dic[key] >= date_hr_meds_dic[key] + yellow_threshold):
-                    with open("potenital_yellows.csv" , "a") as out_file:
+                    with open(f"output/ns/{id}/potenital_yellows.csv" , "a") as out_file:
                         out_file.write(key + "\n")
             
 
@@ -186,7 +186,7 @@ def run(heartrate_file = "",step_file = "",restinghr_file = "",device = ""):
         red_alert_dates = []
         dates_array = []
         try:
-            with open("potenital_reds.csv" , "r") as my_file:
+            with open(f"output/ns/{id}/potenital_reds.csv" , "r") as my_file:
                 for line in my_file:
                     dates_array.append(line.strip(' \t\n\r'))
             track = []
@@ -210,7 +210,7 @@ def run(heartrate_file = "",step_file = "",restinghr_file = "",device = ""):
         yellow_alert_dates = []
         dates_array = []
         try:
-            with open("potenital_yellows.csv" , "r") as my_file:
+            with open(f"output/ns/{id}/potenital_yellows.csv" , "r") as my_file:
                 for line in my_file:
                     dates_array.append(line.strip(' \t\n\r'))
             track = []
@@ -230,9 +230,8 @@ def run(heartrate_file = "",step_file = "",restinghr_file = "",device = ""):
         except:
             print("no yellow file")
             
-            
-        os.system("rm potenital_reds.csv")
-        os.system("rm potenital_yellows.csv")
+        os.system(f"rm output/ns/{id}/potenital_reds.csv")
+        os.system(f"rm output/ns/{id}/potenital_yellows.csv")
 
         
         ###Generating alerts file
@@ -256,7 +255,7 @@ def run(heartrate_file = "",step_file = "",restinghr_file = "",device = ""):
         sorted_alerts = collections.OrderedDict(sorted(alertsDic.items()))
         for key in sorted_alerts:
             alerts['nightsignal'].append({"date": key+"   "+"07:00:00", "val": str(sorted_alerts[key])})
-        with open("NS-signals.json" , "w+") as out_file:
+        with open(f"output/ns/{id}/NS-signals.json" , "w+") as out_file:
             json.dump(alerts, out_file)
 
 
@@ -302,7 +301,7 @@ def run(heartrate_file = "",step_file = "",restinghr_file = "",device = ""):
                         t += delta
         
         # pr int(f'dateTimes={dateTimes["2027-03-24"]}')
-        with open('AW_rhr.csv' , "w") as rhrFile:
+        with open(f'output/ns/{id}/AW_rhr.csv' , "w") as rhrFile:
             rhrFile.write("Device,Start_Date,Start_Time,Value\n")
             # with open(heartrate_file , "r") as hrCSV:
                 # hrCSVReader = csv.DictReader(hrCSV)
@@ -330,7 +329,7 @@ def run(heartrate_file = "",step_file = "",restinghr_file = "",device = ""):
                     #     print(f'{hr_time} is in arrayForThisDay')
 
 
-        with open('AW_rhr.csv', "r") as hrFile:
+        with open(f'output/ns/{id}/AW_rhr.csv', "r") as hrFile:
             records = hrFile.readlines()
 
         date_hrs_dic = {}
@@ -437,10 +436,10 @@ def run(heartrate_file = "",step_file = "",restinghr_file = "",device = ""):
         for key in date_hr_avgs_dic:
             if (key in date_hr_meds_dic):
                 if (date_hr_avgs_dic[key] >= date_hr_meds_dic[key] + red_threshold):
-                    with open("potenital_reds.csv" , "a") as out_file:
+                    with open(f"output/ns/{id}/potenital_reds.csv" , "a") as out_file:
                         out_file.write(key + "\n")
                 if (date_hr_avgs_dic[key] >= date_hr_meds_dic[key] + yellow_threshold):
-                    with open("potenital_yellows.csv" , "a") as out_file:
+                    with open(f"output/ns/{id}/potenital_yellows.csv" , "a") as out_file:
                         out_file.write(key + "\n")
 
         ###Red alerts (red states in NightSignal deterministic finite state machine)
@@ -448,7 +447,7 @@ def run(heartrate_file = "",step_file = "",restinghr_file = "",device = ""):
         red_alert_dates = []
         dates_array = []
         try:
-            with open("potenital_reds.csv", "r") as my_file:
+            with open(f"output/ns/{id}/potenital_reds.csv", "r") as my_file:
                 for line in my_file:
                     dates_array.append(line.strip(' \t\n\r'))
             track = []
@@ -472,7 +471,7 @@ def run(heartrate_file = "",step_file = "",restinghr_file = "",device = ""):
         yellow_alert_dates = []
         dates_array = []
         try:
-            with open("potenital_yellows.csv", "r") as my_file:
+            with open(f"output/ns/{id}/potenital_yellows.csv", "r") as my_file:
                 for line in my_file:
                     dates_array.append(line.strip(' \t\n\r'))
             track = []
@@ -492,8 +491,8 @@ def run(heartrate_file = "",step_file = "",restinghr_file = "",device = ""):
         except:
             print("no yellow file")
 
-        os.system("rm potenital_reds.csv" )
-        os.system("rm potenital_yellows.csv" )
+        os.system(f"rm output/ns/{id}/potenital_reds.csv")
+        os.system(f"rm output/ns/{id}/potenital_yellows.csv")
 
         ###Generating alerts file
         ### 0 indicates green alert
@@ -516,7 +515,7 @@ def run(heartrate_file = "",step_file = "",restinghr_file = "",device = ""):
         sorted_alerts = collections.OrderedDict(sorted(alertsDic.items()))
         for key in sorted_alerts:
             alerts['nightsignal'].append({"date": key+"   "+"07:00:00", "val": str(sorted_alerts[key])})
-        with open("NS-signals.json", "w+") as out_file:
+        with open(f"output/ns/{id}/NS-signals.json", "w+") as out_file:
             json.dump(alerts, out_file)
 
 
@@ -678,7 +677,7 @@ def run(heartrate_file = "",step_file = "",restinghr_file = "",device = ""):
         # print('rrrrrrrrrrrrr')
         # plt.set_title('NightSignal')
         # plt.show()
-        plt.savefig("NightSignalResult.png", dpi=300, bbox_inches = "tight")
+        plt.savefig(f"output/ns/{id}/NightSignalResult.png", dpi=300, bbox_inches="tight")
         plt.close()
     return pd.DataFrame(alerts['nightsignal'])
 
